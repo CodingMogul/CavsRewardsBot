@@ -182,7 +182,7 @@ def update_account_csv(email, points=None, flagged=None):
         writer.writeheader()
         writer.writerows(accounts)
 
-def login_and_upload_receipt(playwright, account):
+def login_and_upload_receipt(playwright, account, receipt_path):
     """Modified login and upload receipt function."""
     email = account["email"]
     proxy_config = None
@@ -199,19 +199,35 @@ def login_and_upload_receipt(playwright, account):
                 "password": password
             }
     
+    # Modified browser launch configuration
     browser = playwright.chromium.launch(
         headless=False,
+        args=[
+            '--disable-dev-shm-usage',
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-gpu',
+            '--disable-software-rasterizer',
+            '--disable-extensions',
+            '--disable-application-cache',
+            '--disable-offline-load-stale-cache',
+            '--disk-cache-size=0'
+        ],
         proxy=proxy_config if proxy_config else None
     )
-    context = browser.new_context()
-    page = context.new_page()
-    stealth_sync(page)
-
+    
+    # Create a new context with additional options
+    context = browser.new_context(
+        viewport={'width': 1920, 'height': 1080},
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        ignore_https_errors=True,  # Add this if you have SSL issues
+        java_script_enabled=True
+    )
+    
     try:
+        page = context.new_page()
+        stealth_sync(page)
         page.goto("https://www.cavsrewards.com/auth")
-        page.get_by_placeholder("Referral Code (optional)").click()
-        time.sleep(0.7)
-        page.get_by_placeholder("Referral Code (optional)").fill("BJjPn")
         time.sleep(0.7)
         page.get_by_role("button", name="Continue to Cavs Rewards").click()
         time.sleep(0.7)
@@ -221,23 +237,20 @@ def login_and_upload_receipt(playwright, account):
         time.sleep(0.7)
         page.get_by_role("button", name="Continue", exact=True).click()
         time.sleep(0.7)
-
-        expect(page.get_by_role("button", name="GET STARTED")).to_be_visible(timeout=2000)
-        print("[INFO] 'GET STARTED' button found! Clicking now...")
-        page.get_by_role("button", name="GET STARTED").click()
-        time.sleep(0.7)
-        page.get_by_role("button", name="Continue").click()
-        time.sleep(0.7)
-        page.get_by_role("button", name="Continue").click()
-        time.sleep(0.7)
-        page.get_by_role("button", name="Continue").click()
-        time.sleep(0.7)
-        page.get_by_role("button", name="Continue").click()
-        time.sleep(0.7)
-        page.locator("svg").click()
-        time.sleep(0.7)
-        page.get_by_role("button", name="Done").click()
-
+        page.goto("https://www.cavsrewards.com/earn/coca-cola-products")
+        time.sleep(2)
+        # Use file chooser to upload the receipt
+        with page.expect_file_chooser() as fc_info:
+            page.get_by_text("Click to upload").click()
+        file_chooser = fc_info.value
+        file_chooser.set_files(receipt_path)
+        time.sleep(2)
+        
+        # Click submit button
+        page.get_by_role("button", name="Submit").click()
+        time.sleep(2)
+        page.goto("https://www.cavsrewards.com/profile")
+        time.sleep(2)
         # Check if the text "Lifetime:" exists in the body
         body_text = page.locator("body").text_content()
         assert "Lifetime:" in page.locator("body").text_content(), "Text 'Lifetime:' not found on the page"
@@ -255,6 +268,22 @@ def login_and_upload_receipt(playwright, account):
             update_account_csv(email, points=points)
             print(f"Updated points for {email}: {points}")
         
+        # Add receipt upload functionality after successful login
+        print("[INFO] Uploading receipt...")
+        page.get_by_role("button", name="Upload Receipt").click()
+        time.sleep(1)
+        
+        # Use file chooser to upload the receipt
+        with page.expect_file_chooser() as fc_info:
+            page.get_by_text("Click to upload").click()
+        file_chooser = fc_info.value
+        file_chooser.set_files(receipt_path)
+        time.sleep(2)
+        
+        # Click submit button
+        page.get_by_role("button", name="Submit").click()
+        time.sleep(2)
+
     except Exception as e:
         print(f"Error processing account {email}: {e}")
         update_account_csv(email, flagged=True)
