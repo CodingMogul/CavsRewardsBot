@@ -6,9 +6,11 @@ import random
 import subprocess
 from datetime import datetime, timedelta
 from playwright.sync_api import Playwright, sync_playwright
+from playwright.async_api import async_playwright
 from playwright.sync_api import expect
-from undetected_playwright import stealth_sync
 from faker import Faker
+import asyncio
+from undetected_playwright import stealth_sync
 
 def escape_latex(text):
     """Escape LaTeX special characters."""
@@ -182,26 +184,145 @@ def update_account_csv(email, points=None, flagged=None):
         writer.writeheader()
         writer.writerows(accounts)
 
-def login_and_upload_receipt(playwright, account, receipt_path):
-    """Modified login and upload receipt function."""
+async def stealth_async(page):
+    """Enhanced async stealth implementation"""
+    await page.evaluate("""
+        () => {
+            // Overwrite the navigator properties
+            Object.defineProperties(navigator, {
+                webdriver: {
+                    get: () => false,
+                    enumerable: true
+                },
+                hardwareConcurrency: {
+                    get: () => 8,
+                    enumerable: true
+                },
+                deviceMemory: {
+                    get: () => 8,
+                    enumerable: true
+                },
+                platform: {
+                    get: () => "Win32",
+                    enumerable: true
+                }
+            });
+
+            // Add language preferences
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ["en-US", "en"],
+                enumerable: true
+            });
+
+            // Mock Chrome runtime
+            window.chrome = {
+                runtime: {},
+                webstore: {},
+                app: {
+                    InstallState: {
+                        DISABLED: 'DISABLED',
+                        INSTALLED: 'INSTALLED',
+                        NOT_INSTALLED: 'NOT_INSTALLED'
+                    },
+                    RunningState: {
+                        CANNOT_RUN: 'CANNOT_RUN',
+                        READY_TO_RUN: 'READY_TO_RUN',
+                        RUNNING: 'RUNNING'
+                    },
+                    isInstalled: false,
+                },
+                csi: function(){},
+                loadTimes: function(){}
+            };
+
+            // Add plugins
+            const pluginArray = [{
+                description: "Portable Document Format",
+                filename: "internal-pdf-viewer",
+                name: "Chrome PDF Plugin",
+                mimeTypes: [{
+                    description: "Portable Document Format",
+                    suffixes: "pdf",
+                    type: "application/x-google-chrome-pdf"
+                }]
+            }];
+
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => pluginArray,
+                enumerable: true
+            });
+
+            // Override permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+            );
+
+            // Add WebGL
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) {
+                    return 'Intel Inc.'
+                }
+                if (parameter === 37446) {
+                    return 'Intel(R) Iris(TM) Graphics 6100'
+                }
+                return getParameter(parameter);
+            };
+        }
+    """)
+
+    # Add additional headers to appear more like a real browser
+    await page.set_extra_http_headers({
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Upgrade-Insecure-Requests': '1',
+        'Connection': 'keep-alive'
+    })
+
+    # Modify webdriver flags
+    await page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {value: false});
+        Object.defineProperty(navigator, 'automationControlled', {value: false});
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+    """)
+
+async def login_and_upload_receipt(playwright, account, receipt_path):
+    """Modified login and upload receipt function using async/await."""
     email = account["email"]
     proxy_config = None
     
-    if account['proxy']:  # Parse proxy string from CSV
-        proxy_parts = account['proxy'].split('@')
-        if len(proxy_parts) == 2:
-            auth, server = proxy_parts
-            username, password = auth.split(':')
-            host, port = server.split(':')
-            proxy_config = {
-                "server": f"http://{host}:{port}",
-                "username": username,
-                "password": password
-            }
-    
-    # Modified browser launch configuration
-    browser = playwright.chromium.launch(
-        headless=False,
+    if account['proxy'] and account['proxy'].strip():  # Check if proxy exists and isn't empty
+        try:
+            proxy_parts = account['proxy'].split(':')
+            if len(proxy_parts) == 4:  # Format: host:port:username:password
+                host, port, username, password = proxy_parts
+                proxy_config = {
+                    "server": f"http://{host}:{port}",
+                    "username": username,
+                    "password": password
+                }
+                print(f"[INFO] Using proxy for {email}: {host}:{port}")
+            elif len(proxy_parts) == 2:  # Format: host:port
+                host, port = proxy_parts
+                proxy_config = {
+                    "server": f"http://{host}:{port}"
+                }
+                print(f"[INFO] Using proxy without auth for {email}: {host}:{port}")
+            else:
+                print(f"[WARNING] Invalid proxy format for {email}. Expected host:port:username:password or host:port")
+        except Exception as e:
+            print(f"[WARNING] Invalid proxy format for {email}: {e}")
+
+    browser = await playwright.chromium.launch(
+        headless=False,  # Changed to True for stability
+        proxy=proxy_config if proxy_config else None,
         args=[
             '--disable-dev-shm-usage',
             '--no-sandbox',
@@ -212,12 +333,10 @@ def login_and_upload_receipt(playwright, account, receipt_path):
             '--disable-application-cache',
             '--disable-offline-load-stale-cache',
             '--disk-cache-size=0'
-        ],
-        proxy=proxy_config if proxy_config else None
+        ]
     )
     
-    # Create a new context with additional options
-    context = browser.new_context(
+    context = await browser.new_context(
         viewport={'width': 1920, 'height': 1080},
         user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         ignore_https_errors=True,  # Add this if you have SSL issues
@@ -225,74 +344,69 @@ def login_and_upload_receipt(playwright, account, receipt_path):
     )
     
     try:
-        page = context.new_page()
-        stealth_sync(page)
-        page.goto("https://www.cavsrewards.com/auth")
-        time.sleep(0.7)
-        page.get_by_role("button", name="Continue to Cavs Rewards").click()
-        time.sleep(0.7)
-        page.get_by_label("Email address").fill(account["email"])
-        time.sleep(0.7)
-        page.get_by_label("Password").fill(account["password"])
-        time.sleep(0.7)
-        page.get_by_role("button", name="Continue", exact=True).click()
-        time.sleep(0.7)
-        page.goto("https://www.cavsrewards.com/earn/coca-cola-products")
-        time.sleep(2)
-        # Use file chooser to upload the receipt
-        with page.expect_file_chooser() as fc_info:
-            page.get_by_text("Click to upload").click()
-        file_chooser = fc_info.value
-        file_chooser.set_files(receipt_path)
-        time.sleep(2)
+        page = await context.new_page()
+        await stealth_async(page)
         
-        # Click submit button
-        page.get_by_role("button", name="Submit").click()
-        time.sleep(2)
-        page.goto("https://www.cavsrewards.com/profile")
-        time.sleep(2)
-        # Check if the text "Lifetime:" exists in the body
-        body_text = page.locator("body").text_content()
-        assert "Lifetime:" in page.locator("body").text_content(), "Text 'Lifetime:' not found on the page"
-        # Retrieve the text content of the <body>
-        # Extract points
+        await page.goto("https://www.cavsrewards.com/auth")
+        await page.wait_for_load_state("networkidle")
+        
+        continue_button = page.get_by_role("button", name="Continue to Cavs Rewards")
+        await continue_button.wait_for(state="visible", timeout=30000)
+        await continue_button.click()
+        
+        email_input = page.get_by_label("Email address")
+        await email_input.wait_for(state="visible", timeout=30000)
+        await email_input.fill(account["email"])
+        
+        password_input = page.get_by_label("Password")
+        await password_input.wait_for(state="visible", timeout=30000)
+        await password_input.fill(account["password"])
+        
+        continue_btn = page.get_by_role("button", name="Continue", exact=True)
+        await continue_btn.wait_for(state="visible", timeout=30000)
+        await continue_btn.click()
+        
+        await page.goto("https://www.cavsrewards.com/earn/coca-cola-products")
+        await page.wait_for_load_state("networkidle")
+        
+        upload_btn = page.get_by_role("button", name="Upload Receipt")
+        await upload_btn.wait_for(state="visible", timeout=30000)
+        
+        async with page.expect_file_chooser() as fc_info:
+            await upload_btn.dblclick()
+        file_chooser = await fc_info.value
+        await file_chooser.set_files(receipt_path)
+        
+        submit_btn = page.get_by_role("button", name="Check")
+        await submit_btn.wait_for(state="visible", timeout=30000)
+        await submit_btn.click()
+        await page.wait_for_load_state("networkidle")
+        await asyncio.sleep(3000) 
+        
+        await page.goto("https://www.cavsrewards.com/profile")
+        await page.wait_for_load_state("networkidle")
+        await asyncio.sleep(3000) 
+        await page.wait_for_function('document.body.textContent.includes("Lifetime:")', timeout=30000)
+        body_text = await page.locator("body").text_content()
+        
         points = None
         if "Lifetime:" in body_text:
             matches = re.findall(r"Lifetime:\s*([\d,]+)", body_text)
             if matches:
                 points = int(matches[0].replace(",", ""))
                 print(f"Account points for {email}: {points}")
-
-        # After getting points
-        if points is not None:
-            update_account_csv(email, points=points)
-            print(f"Updated points for {email}: {points}")
-        
-        # Add receipt upload functionality after successful login
-        print("[INFO] Uploading receipt...")
-        page.get_by_role("button", name="Upload Receipt").click()
-        time.sleep(1)
-        
-        # Use file chooser to upload the receipt
-        with page.expect_file_chooser() as fc_info:
-            page.get_by_text("Click to upload").click()
-        file_chooser = fc_info.value
-        file_chooser.set_files(receipt_path)
-        time.sleep(2)
-        
-        # Click submit button
-        page.get_by_role("button", name="Submit").click()
-        time.sleep(2)
+                update_account_csv(email, points=points)
+                print(f"Updated points for {email}: {points}")
 
     except Exception as e:
         print(f"Error processing account {email}: {e}")
         update_account_csv(email, flagged=True)
     finally:
-        context.close()
-        browser.close()
+        await context.close()
+        await browser.close()
 
-def main():
-    """Modified main function to process oldest account every 30 minutes."""
+async def main():
+    """Modified main function to handle async operations."""
     while True:
         accounts = load_accounts_from_csv()
         
@@ -300,10 +414,7 @@ def main():
             print("[INFO] No accounts found in CSV. Please add accounts manually.")
             return
 
-        # Sort accounts by last_login time, None/empty values first
         accounts.sort(key=lambda x: datetime.strptime(x['last_login'], "%Y-%m-%d %H:%M:%S") if x['last_login'] else datetime.min)
-        
-        # Get the oldest non-flagged account
         account = next((acc for acc in accounts if not acc['flagged']), None)
         
         if not account:
@@ -312,19 +423,19 @@ def main():
 
         print(f"[INFO] Processing oldest account {account['email']}...")
         
-        with sync_playwright() as playwright:
+        async with async_playwright() as playwright:
             # Generate and upload receipt
             tc_number, st_number, random_date, amex_number, items, subtotal, tax1, total = generate_random_receipt()
             create_receipt_latex(tc_number, st_number, random_date, amex_number, items, subtotal, tax1, total, "Header.png", "barcode.png")
 
             if compile_latex_to_png():
                 receipt_path = "receipt.png"
-                login_and_upload_receipt(playwright, account, receipt_path)
+                await login_and_upload_receipt(playwright, account, receipt_path)
             else:
                 print(f"[ERROR] Failed to generate receipt for {account['email']}. Skipping.")
 
         print("[INFO] Waiting 30 minutes before next account processing...")
-        time.sleep(1800)  # Wait 30 minutes
+        await asyncio.sleep(1800)  # Wait 30 minutes
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
