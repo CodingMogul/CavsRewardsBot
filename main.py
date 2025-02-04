@@ -5,12 +5,9 @@ import time
 import random
 import subprocess
 from datetime import datetime, timedelta
-from playwright.sync_api import Playwright, sync_playwright
-from playwright.async_api import async_playwright
-from playwright.sync_api import expect
+from patchright.async_api import async_playwright
 from faker import Faker
 import asyncio
-from undetected_playwright import stealth_sync
 
 def escape_latex(text):
     """Escape LaTeX special characters."""
@@ -184,114 +181,6 @@ def update_account_csv(email, points=None, flagged=None):
         writer.writeheader()
         writer.writerows(accounts)
 
-async def stealth_async(page):
-    """Enhanced async stealth implementation"""
-    await page.evaluate("""
-        () => {
-            // Overwrite the navigator properties
-            Object.defineProperties(navigator, {
-                webdriver: {
-                    get: () => false,
-                    enumerable: true
-                },
-                hardwareConcurrency: {
-                    get: () => 8,
-                    enumerable: true
-                },
-                deviceMemory: {
-                    get: () => 8,
-                    enumerable: true
-                },
-                platform: {
-                    get: () => "Win32",
-                    enumerable: true
-                }
-            });
-
-            // Add language preferences
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ["en-US", "en"],
-                enumerable: true
-            });
-
-            // Mock Chrome runtime
-            window.chrome = {
-                runtime: {},
-                webstore: {},
-                app: {
-                    InstallState: {
-                        DISABLED: 'DISABLED',
-                        INSTALLED: 'INSTALLED',
-                        NOT_INSTALLED: 'NOT_INSTALLED'
-                    },
-                    RunningState: {
-                        CANNOT_RUN: 'CANNOT_RUN',
-                        READY_TO_RUN: 'READY_TO_RUN',
-                        RUNNING: 'RUNNING'
-                    },
-                    isInstalled: false,
-                },
-                csi: function(){},
-                loadTimes: function(){}
-            };
-
-            // Add plugins
-            const pluginArray = [{
-                description: "Portable Document Format",
-                filename: "internal-pdf-viewer",
-                name: "Chrome PDF Plugin",
-                mimeTypes: [{
-                    description: "Portable Document Format",
-                    suffixes: "pdf",
-                    type: "application/x-google-chrome-pdf"
-                }]
-            }];
-
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => pluginArray,
-                enumerable: true
-            });
-
-            // Override permissions
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => (
-                parameters.name === 'notifications' ?
-                Promise.resolve({ state: Notification.permission }) :
-                originalQuery(parameters)
-            );
-
-            // Add WebGL
-            const getParameter = WebGLRenderingContext.prototype.getParameter;
-            WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                if (parameter === 37445) {
-                    return 'Intel Inc.'
-                }
-                if (parameter === 37446) {
-                    return 'Intel(R) Iris(TM) Graphics 6100'
-                }
-                return getParameter(parameter);
-            };
-        }
-    """)
-
-    # Add additional headers to appear more like a real browser
-    await page.set_extra_http_headers({
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Upgrade-Insecure-Requests': '1',
-        'Connection': 'keep-alive'
-    })
-
-    # Modify webdriver flags
-    await page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {value: false});
-        Object.defineProperty(navigator, 'automationControlled', {value: false});
-        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
-    """)
 
 async def login_and_upload_receipt(playwright, account, receipt_path):
     """Modified login and upload receipt function using async/await."""
@@ -344,9 +233,7 @@ async def login_and_upload_receipt(playwright, account, receipt_path):
     )
     
     try:
-        page = await context.new_page()
-        await stealth_async(page)
-        
+        page = await context.new_page()        
         await page.goto("https://www.cavsrewards.com/auth")
         await page.wait_for_load_state("networkidle")
         
