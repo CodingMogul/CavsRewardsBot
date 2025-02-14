@@ -210,8 +210,7 @@ async def main():
                     success, password = await create_account(playwright, email, proxy)
                     
                     if success and password:
-                        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        accounts_data.append([email, password, '0', current_time, 'false', proxy])
+                        accounts_data.append([email, password, '0', '', 'false', proxy])
                         used_proxies.append(proxy)
                         print(f"Successfully created account for {email}")
                     else:
@@ -230,7 +229,7 @@ async def main():
                     writer = csv.writer(f)
                     # Write headers only if it's a new file
                     if mode == 'w':
-                        writer.writerow(['email', 'password', 'points', 'last_login', 'flagged', 'proxy'])
+                        writer.writerow(['email', 'password', 'points', 'next_submission', 'flagged', 'proxy'])
                         print("Created new CSV file with headers")
                     writer.writerows(accounts_data)
                     print(f"Successfully wrote {len(accounts_data)} accounts to CSV")

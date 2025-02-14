@@ -137,7 +137,7 @@ def load_accounts_from_csv():
         # Create file with headers if it doesn't exist
         with open(csv_file, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['email', 'password', 'points', 'last_login', 'flagged', 'proxy'])
+            writer.writerow(['email', 'password', 'points', 'next_submission', 'flagged', 'proxy'])
         return accounts
 
     with open(csv_file, 'r', newline='') as f:
@@ -147,13 +147,13 @@ def load_accounts_from_csv():
                 'email': row['email'],
                 'password': row['password'],
                 'points': int(row['points']) if row['points'] else 0,
-                'last_login': row['last_login'],
+                'next_submission': row['next_submission'],
                 'flagged': row['flagged'].lower() == 'true',
                 'proxy': row['proxy']
             })
     return accounts
 
-def update_account_csv(email, points=None, flagged=None):
+def update_account_csv(email, points=None, flagged=None, next_submission=None):
     """Update account details in CSV file."""
     accounts = []
     csv_file = "accounts.csv"
@@ -173,14 +173,36 @@ def update_account_csv(email, points=None, flagged=None):
                 account['points'] = str(points)
             if flagged is not None:
                 account['flagged'] = str(flagged)
-            account['last_login'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if next_submission is not None:
+                account['next_submission'] = next_submission
     
     # Write back to CSV
     with open(csv_file, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['email', 'password', 'points', 'last_login', 'flagged', 'proxy'])
+        writer = csv.DictWriter(f, fieldnames=['email', 'password', 'points', 'next_submission', 'flagged', 'proxy'])
         writer.writeheader()
         writer.writerows(accounts)
 
+def get_next_available_account(accounts):
+    """Get the next available account based on submission timing."""
+    current_time = datetime.now()
+    
+    # First, look for accounts with blank next_submission
+    blank_submission_account = next(
+        (acc for acc in accounts if not acc['flagged'] and not acc['next_submission']), 
+        None
+    )
+    if blank_submission_account:
+        return blank_submission_account
+
+    # Then, look for accounts whose next_submission time has passed
+    available_account = next(
+        (acc for acc in accounts 
+         if not acc['flagged'] 
+         and acc['next_submission']
+         and datetime.strptime(acc['next_submission'], "%Y-%m-%d %H:%M:%S") <= current_time),
+        None
+    )
+    return available_account
 
 async def login_and_upload_receipt(playwright, account, receipt_path):
     """Modified login and upload receipt function using async/await."""
@@ -301,14 +323,14 @@ async def main():
             print("[INFO] No accounts found in CSV. Please add accounts manually.")
             return
 
-        accounts.sort(key=lambda x: datetime.strptime(x['last_login'], "%Y-%m-%d %H:%M:%S") if x['last_login'] else datetime.min)
-        account = next((acc for acc in accounts if not acc['flagged']), None)
+        account = get_next_available_account(accounts)
         
         if not account:
-            print("[INFO] No valid accounts available. All accounts are flagged.")
-            return
+            print("[INFO] No accounts available for submission. Waiting 5 minutes...")
+            await asyncio.sleep(300)  # Wait 5 minutes before checking again
+            continue
 
-        print(f"[INFO] Processing oldest account {account['email']}...")
+        print(f"[INFO] Processing account {account['email']}...")
         
         async with async_playwright() as playwright:
             # Generate and upload receipt
@@ -318,11 +340,24 @@ async def main():
             if compile_latex_to_png():
                 receipt_path = "receipt.png"
                 await login_and_upload_receipt(playwright, account, receipt_path)
+                
+                # Set next submission time based on whether this was the first submission
+                if not account['next_submission']:
+                    # For first submission (blank next_submission), set to exactly 50 hours from now
+                    next_submission = (datetime.now() + timedelta(hours=50)).strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"[INFO] First submission for {account['email']}, setting next submission to exactly 50 hours from now: {next_submission}")
+                else:
+                    # For subsequent submissions, use random 12-36 hour window
+                    next_hours = random.uniform(12, 36)
+                    next_submission = (datetime.now() + timedelta(hours=next_hours)).strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"[INFO] Subsequent submission for {account['email']}, setting next submission randomly to {next_submission}")
+                
+                update_account_csv(account['email'], next_submission=next_submission)
             else:
                 print(f"[ERROR] Failed to generate receipt for {account['email']}. Skipping.")
 
-        print("[INFO] Waiting 30 minutes before next account processing...")
-        await asyncio.sleep(1800)  # Wait 30 minutes
+        print("[INFO] Waiting 5 minutes before checking next account...")
+        await asyncio.sleep(300)  # Wait 5 minutes before processing next account
 
 if __name__ == "__main__":
     asyncio.run(main())
