@@ -325,24 +325,44 @@ async def login_and_upload_receipt(playwright, account, receipt_path):
             
             # Upload receipt
             await page.goto('https://www.cavsrewards.com/earn/coca-cola-products')
+            await page.wait_for_load_state("networkidle")
 
-            await page.click('text=Upload Receipt')
+            # First find and set the hidden file input
+            await page.wait_for_selector('input[type="file"]', state='attached')
             await page.set_input_files('input[type="file"]', receipt_path)
-            await page.click('button:has-text("Submit")')
+
+            # Then click the Check/Submit button
+            await page.get_by_role("button").nth(3).click()
+
             
             # Wait for upload to complete and check result
             await page.wait_for_timeout(5000)
             
-            # Get current points
-            points_text = await page.locator('.points-value').text_content()
-            points = int(re.search(r'\d+', points_text).group())
+            await page.goto('https://www.cavsrewards.com/rewards')
+            await page.wait_for_load_state("networkidle")
             
+            # Get current points using the correct selector
+            points_text = await page.locator('h1.text-4xl.text-textColorSecondary').text_content()
+            new_points = int(points_text)
+            
+            # Get previous points from the account
+            previous_points = int(account['points']) if account['points'] else 0
+            
+            # Check if points haven't increased
+            if new_points <= previous_points:
+                error_msg = f"Receipt submission failed: Points didn't increase (Previous: {previous_points}, Current: {new_points})"
+                print(f"[ERROR] {error_msg}")
+                log_receipt_failed(email, error_msg)
+                update_account_csv(email, points=new_points, flagged=True)
+                return False
+            
+            # Points increased successfully
             # Set next submission time (24-48 hours from now)
             next_submission = datetime.now() + timedelta(hours=random.randint(24, 48))
             next_submission_str = next_submission.strftime("%Y-%m-%d %H:%M:%S")
             
             # Update CSV with new points and next submission time
-            update_account_csv(email, points=points, next_submission=next_submission_str)
+            update_account_csv(email, points=new_points, next_submission=next_submission_str)
             
             log_receipt_accepted(email)
             log_new_submission_date(email, next_submission_str)
