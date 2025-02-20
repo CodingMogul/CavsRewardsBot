@@ -8,6 +8,49 @@ from datetime import datetime, timedelta
 from patchright.async_api import async_playwright
 from faker import Faker
 import asyncio
+import requests
+from typing import Optional
+
+# Discord webhook URL - replace with your actual webhook URL
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1342235677152252016/EcVcFoN2q-KqXtBG7kH0vI6dRcFYZNYIVuRRxfbkqN357VJrrDlz8vU2Hf2Tb4ei8sqP"
+
+def send_webhook_message(content: str, color: Optional[int] = None) -> None:
+    """Send a message to Discord webhook."""
+    if not DISCORD_WEBHOOK_URL.startswith("http"):
+        return  # Skip if webhook URL is not set
+        
+    embed = {
+        "description": content,
+        "color": color or 0x00ff00  # Default to green if no color specified
+    }
+    
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, 
+                     json={"embeds": [embed]},
+                     headers={"Content-Type": "application/json"})
+    except Exception as e:
+        print(f"Failed to send webhook message: {e}")
+
+def log_idle_no_accounts():
+    send_webhook_message("⚠️ No accounts ready for submission", 0xffa500)  # Orange
+
+def log_account_login(account: str):
+    send_webhook_message(f"🔑 Logging into account: {account}", 0x00ff00)  # Green
+
+def log_login_failed(account: str, error: str):
+    send_webhook_message(f"❌ Login failed for account {account}: {error}", 0xff0000)  # Red
+
+def log_receipt_submission(account: str):
+    send_webhook_message(f"📝 Submitting receipt for account: {account}", 0x00ff00)
+
+def log_receipt_failed(account: str, error: str):
+    send_webhook_message(f"❌ Receipt submission failed for {account}: {error}", 0xff0000)
+
+def log_receipt_accepted(account: str):
+    send_webhook_message(f"✅ Receipt accepted for account: {account}", 0x00ff00)
+
+def log_new_submission_date(account: str, next_date: str):
+    send_webhook_message(f"📅 New submission date set for {account}: {next_date}", 0x00ffff)  # Cyan
 
 def escape_latex(text):
     """Escape LaTeX special characters."""
@@ -202,12 +245,18 @@ def get_next_available_account(accounts):
          and datetime.strptime(acc['next_submission'], "%Y-%m-%d %H:%M:%S") <= current_time),
         None
     )
+    
+    if not available_account:
+        log_idle_no_accounts()
+        
     return available_account
 
 async def login_and_upload_receipt(playwright, account, receipt_path):
     """Modified login and upload receipt function using async/await."""
     email = account["email"]
     proxy_config = None
+    
+    log_account_login(email)
     
     if account['proxy'] and account['proxy'].strip():  # Check if proxy exists and isn't empty
         try:
@@ -229,90 +278,92 @@ async def login_and_upload_receipt(playwright, account, receipt_path):
             else:
                 print(f"[WARNING] Invalid proxy format for {email}. Expected host:port:username:password or host:port")
         except Exception as e:
-            print(f"[WARNING] Invalid proxy format for {email}: {e}")
+            error_msg = f"[WARNING] Invalid proxy format for {email}: {e}"
+            print(error_msg)
+            log_login_failed(email, error_msg)
+            return False
 
-    browser = await playwright.chromium.launch(
-        headless=False,  # Changed to True for stability
-        proxy=proxy_config if proxy_config else None,
-        args=[
-            '--disable-dev-shm-usage',
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-gpu',
-            '--disable-software-rasterizer',
-            '--disable-extensions',
-            '--disable-application-cache',
-            '--disable-offline-load-stale-cache',
-            '--disk-cache-size=0'
-        ]
-    )
-    
-    context = await browser.new_context(
-        viewport={'width': 1920, 'height': 1080},
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        ignore_https_errors=True,  # Add this if you have SSL issues
-        java_script_enabled=True
-    )
-    
     try:
-        page = await context.new_page()        
-        await page.goto("https://www.cavsrewards.com/auth")
-        await page.wait_for_load_state("networkidle")
+        browser = await playwright.chromium.launch(
+            headless=False,  # Changed to True for stability
+            proxy=proxy_config if proxy_config else None,
+            args=[
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-gpu',
+                '--disable-software-rasterizer',
+                '--disable-extensions',
+                '--disable-application-cache',
+                '--disable-offline-load-stale-cache',
+                '--disk-cache-size=0'
+            ]
+        )
         
-        continue_button = page.get_by_role("button", name="Continue to Cavs Rewards")
-        await continue_button.wait_for(state="visible", timeout=30000)
-        await continue_button.click()
+        context = await browser.new_context()
+        page = await context.new_page()
         
-        email_input = page.get_by_label("Email address")
-        await email_input.wait_for(state="visible", timeout=30000)
-        await email_input.fill(account["email"])
-        
-        password_input = page.get_by_label("Password")
-        await password_input.wait_for(state="visible", timeout=30000)
-        await password_input.fill(account["password"])
-        
-        continue_btn = page.get_by_role("button", name="Continue", exact=True)
-        await continue_btn.wait_for(state="visible", timeout=30000)
-        await continue_btn.click()
-        
-        await page.goto("https://www.cavsrewards.com/earn/coca-cola-products")
-        await page.wait_for_load_state("networkidle")
-        
-        upload_btn = page.get_by_role("button", name="Upload Receipt")
-        await upload_btn.wait_for(state="visible", timeout=30000)
-        
-        async with page.expect_file_chooser() as fc_info:
-            await upload_btn.dblclick()
-        file_chooser = await fc_info.value
-        await file_chooser.set_files(receipt_path)
-        
-        submit_btn = page.get_by_role("button", name="Check")
-        await submit_btn.wait_for(state="visible", timeout=30000)
-        await submit_btn.click()
-        await page.wait_for_load_state("networkidle")
-        await asyncio.sleep(3000) 
-        
-        await page.goto("https://www.cavsrewards.com/profile")
-        await page.wait_for_load_state("networkidle")
-        await asyncio.sleep(3000) 
-        await page.wait_for_function('document.body.textContent.includes("Lifetime:")', timeout=30000)
-        body_text = await page.locator("body").text_content()
-        
-        points = None
-        if "Lifetime:" in body_text:
-            matches = re.findall(r"Lifetime:\s*([\d,]+)", body_text)
-            if matches:
-                points = int(matches[0].replace(",", ""))
-                print(f"Account points for {email}: {points}")
-                update_account_csv(email, points=points)
-                print(f"Updated points for {email}: {points}")
+        try:
+            # Login process
+            await page.goto('https://www.cavsrewards.com/auth')
+            await page.click('text=Continue to Cavs Rewards')
+            await page.fill('input[type="email"]', email)
+            await page.fill('input[type="password"]', account['password'])
+            await page.get_by_role("button", name="Continue", exact=True).click()
+            
+            # Wait for login to complete
+            await page.wait_for_timeout(5000)
+            
+            # Check if login was successful
+            if await page.locator('text=Sign In').count() > 0:
+                error_msg = "Login failed - Sign In button still present"
+                print(f"[ERROR] {error_msg}")
+                log_login_failed(email, error_msg)
+                return False
+                
+            log_receipt_submission(email)
+            
+            # Upload receipt
+            await page.goto('https://www.cavsrewards.com/earn/coca-cola-products')
 
+            await page.click('text=Upload Receipt')
+            await page.set_input_files('input[type="file"]', receipt_path)
+            await page.click('button:has-text("Submit")')
+            
+            # Wait for upload to complete and check result
+            await page.wait_for_timeout(5000)
+            
+            # Get current points
+            points_text = await page.locator('.points-value').text_content()
+            points = int(re.search(r'\d+', points_text).group())
+            
+            # Set next submission time (24-48 hours from now)
+            next_submission = datetime.now() + timedelta(hours=random.randint(24, 48))
+            next_submission_str = next_submission.strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Update CSV with new points and next submission time
+            update_account_csv(email, points=points, next_submission=next_submission_str)
+            
+            log_receipt_accepted(email)
+            log_new_submission_date(email, next_submission_str)
+            
+            return True
+            
+        except Exception as e:
+            error_msg = f"Error during receipt submission: {str(e)}"
+            print(f"[ERROR] {error_msg}")
+            log_receipt_failed(email, error_msg)
+            return False
+            
+        finally:
+            await context.close()
+            await browser.close()
+            
     except Exception as e:
-        print(f"Error processing account {email}: {e}")
-        update_account_csv(email, flagged=True)
-    finally:
-        await context.close()
-        await browser.close()
+        error_msg = f"Browser launch failed: {str(e)}"
+        print(f"[ERROR] {error_msg}")
+        log_login_failed(email, error_msg)
+        return False
 
 async def main():
     """Modified main function to handle async operations."""

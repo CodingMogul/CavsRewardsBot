@@ -2,6 +2,50 @@ import random
 from datetime import datetime, timedelta
 import os
 import subprocess
+import json
+import requests
+from typing import Optional
+
+# Discord webhook URL - replace with your actual webhook URL
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1342235677152252016/EcVcFoN2q-KqXtBG7kH0vI6dRcFYZNYIVuRRxfbkqN357VJrrDlz8vU2Hf2Tb4ei8sqP"
+
+def send_webhook_message(content: str, color: Optional[int] = None) -> None:
+    """Send a message to Discord webhook."""
+    if not DISCORD_WEBHOOK_URL.startswith("http"):
+        return  # Skip if webhook URL is not set
+        
+    embed = {
+        "description": content,
+        "color": color or 0x00ff00  # Default to green if no color specified
+    }
+    
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, 
+                     json={"embeds": [embed]},
+                     headers={"Content-Type": "application/json"})
+    except Exception as e:
+        print(f"Failed to send webhook message: {e}")
+
+def log_idle_no_accounts():
+    send_webhook_message("⚠️ No accounts ready for submission", 0xffa500)  # Orange
+
+def log_account_login(account: str):
+    send_webhook_message(f"🔑 Logging into account: {account}", 0x00ff00)  # Green
+
+def log_login_failed(account: str, error: str):
+    send_webhook_message(f"❌ Login failed for account {account}: {error}", 0xff0000)  # Red
+
+def log_receipt_submission(account: str):
+    send_webhook_message(f"📝 Submitting receipt for account: {account}", 0x00ff00)
+
+def log_receipt_failed(account: str, error: str):
+    send_webhook_message(f"❌ Receipt submission failed for {account}: {error}", 0xff0000)
+
+def log_receipt_accepted(account: str):
+    send_webhook_message(f"✅ Receipt accepted for account: {account}", 0x00ff00)
+
+def log_new_submission_date(account: str, next_date: str):
+    send_webhook_message(f"📅 New submission date set for {account}: {next_date}", 0x00ffff)  # Cyan
 
 def escape_latex(text):
     """Escape LaTeX special characters."""
@@ -117,10 +161,12 @@ def compile_latex_to_png():
     try:
         subprocess.run(["pdflatex", "receipt.tex"], check=True)
         subprocess.run(["convert", "-density", "200", "receipt.pdf", "-quality", "100", "receipt.png"], check=True)
+        return True
     except subprocess.CalledProcessError as e:
-        print(f"Error during compilation: {e}")
+        error_msg = f"Error during compilation: {e}"
+        print(error_msg)
+        log_receipt_failed("Receipt Generator", error_msg)
         return False
-    return True
 
 def main():
     tc_number, st_number, random_date, amex_number, items, subtotal, tax1, total = generate_random_receipt()
@@ -129,20 +175,28 @@ def main():
 
     # Check if required files exist
     if not os.path.exists(logo_path):
-        print(f"Error: '{logo_path}' is missing!")
+        error_msg = f"Error: '{logo_path}' is missing!"
+        print(error_msg)
+        log_receipt_failed("Receipt Generator", error_msg)
         return
     if not os.path.exists(barcode_path):
-        print(f"Error: '{barcode_path}' is missing!")
+        error_msg = f"Error: '{barcode_path}' is missing!"
+        print(error_msg)
+        log_receipt_failed("Receipt Generator", error_msg)
         return
 
+    log_receipt_submission("Receipt Generator")
     create_receipt_latex(tc_number, st_number, random_date, amex_number, items, subtotal, tax1, total, logo_path, barcode_path)
+    
     if compile_latex_to_png():
         for ext in ["aux", "log", "pdf", "tex"]:
             if os.path.exists(f"receipt.{ext}"):
                 os.remove(f"receipt.{ext}")
         print("Receipt generated: receipt.png")
+        log_receipt_accepted("Receipt Generator")
     else:
         print("Failed to generate receipt.")
+        log_receipt_failed("Receipt Generator", "Failed to compile receipt")
 
 if __name__ == "__main__":
     main()

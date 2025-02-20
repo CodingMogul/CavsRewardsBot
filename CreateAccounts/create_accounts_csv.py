@@ -7,6 +7,7 @@ import string
 import sys
 from typing import List, Tuple, Optional
 from patchright.async_api import Playwright, async_playwright, expect
+import aiohttp  # Add this import at the top with other imports
 
 class AccountCreationError(Exception):
     """Custom exception for account creation errors"""
@@ -184,8 +185,49 @@ async def create_account(playwright: Playwright, email: str, proxy: str) -> Tupl
         if browser:
             await browser.close()
 
+async def send_discord_webhook(webhook_url: str, email: str, password: str, proxy: str, success: bool) -> None:
+    """Send detailed notification to Discord webhook when account creation succeeds or fails"""
+    try:
+        status_emoji = "✅" if success else "❌"
+        status_text = "Created" if success else "Failed"
+        
+        message = {
+            "embeds": [{
+                "title": f"{status_emoji} Account {status_text}",
+                "fields": [
+                    {
+                        "name": "Email",
+                        "value": f"`{email}`",
+                        "inline": True
+                    },
+                    {
+                        "name": "Password",
+                        "value": f"`{password if success else 'N/A'}`",
+                        "inline": True
+                    },
+                    {
+                        "name": "Proxy Status",
+                        "value": f"`{'Used' if success else 'Unused'}: {proxy}`",
+                        "inline": False
+                    }
+                ],
+                "color": 65280 if success else 16711680,  # Green for success, Red for failure
+                "timestamp": datetime.utcnow().isoformat()
+            }]
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(webhook_url, json=message) as response:
+                if response.status != 204:
+                    print(f"Failed to send webhook notification: {response.status}")
+    except Exception as e:
+        print(f"Error sending webhook notification: {str(e)}")
+
 async def main():
     try:
+        # Add webhook URL near the start of main
+        webhook_url = "https://discord.com/api/webhooks/1342235677152252016/EcVcFoN2q-KqXtBG7kH0vI6dRcFYZNYIVuRRxfbkqN357VJrrDlz8vU2Hf2Tb4ei8sqP"  # Replace with your webhook URL
+        
         # Create directory for CSV if it doesn't exist
         script_dir = os.path.dirname(os.path.abspath(__file__))
         csv_file = os.path.join(script_dir, 'new_accounts.csv')
@@ -213,8 +255,10 @@ async def main():
                         accounts_data.append([email, password, '0', '', 'false', proxy])
                         used_proxies.append(proxy)
                         print(f"Successfully created account for {email}")
+                        await send_discord_webhook(webhook_url, email, password, proxy, True)
                     else:
                         print(f"Failed to create account for {email}")
+                        await send_discord_webhook(webhook_url, email, "", proxy, False)
                         
                 except Exception as e:
                     print(f"Error processing email {email}: {str(e)}")
